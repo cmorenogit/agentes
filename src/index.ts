@@ -4,6 +4,7 @@ import { SQLAnalyzer } from './agent/analyzer.js';
 import { SQLReader } from './parser/sql-reader.js';
 import { PRHandler } from './github/pr-handler.js';
 import { PRCommenter } from './github/commenter.js';
+import { GitHubReporter } from './github/reporter.js';
 
 interface Config {
   githubToken: string;
@@ -40,6 +41,16 @@ function loadConfig(): Config {
     repository,
     prNumber: parseInt(prNumber, 10),
   };
+}
+
+function buildGitHubRunUrl(repository: string): string | undefined {
+  const runId = process.env.GITHUB_RUN_ID;
+
+  if (!runId) {
+    return undefined;
+  }
+
+  return `https://github.com/${repository}/actions/runs/${runId}`;
 }
 
 async function main() {
@@ -100,9 +111,17 @@ async function main() {
       }))
     );
 
+    // Generate GitHub Actions run URL
+    const runUrl = buildGitHubRunUrl(config.repository);
+
+    // Generate and write Job Summary
+    console.log('\n📊 Generating detailed report...');
+    const jobSummary = GitHubReporter.generateJobSummary(results, config.prNumber, config.repository);
+    await GitHubReporter.writeJobSummary(jobSummary);
+
     // Post comment to PR
     console.log('\n💬 Posting analysis to PR...');
-    await commenter.postComment(config.prNumber, results);
+    await commenter.postComment(config.prNumber, results, runUrl);
 
     console.log('\n✨ Analysis complete! Check the PR for results.\n');
   } catch (error) {
