@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { SQLAnalyzer } from './agent/analyzer.js';
+import { OpenAIAnalyzer } from './agent/openai-analyzer.js';
+import { GeminiAnalyzer } from './agent/gemini-analyzer.js';
 import { SQLReader } from './parser/sql-reader.js';
 import { PRHandler } from './github/pr-handler.js';
 import { PRCommenter } from './github/commenter.js';
@@ -9,6 +11,8 @@ import { GitHubReporter } from './github/reporter.js';
 interface Config {
   githubToken: string;
   anthropicApiKey: string;
+  openaiApiKey: string;
+  geminiApiKey: string;
   repository: string; // format: "owner/repo"
   prNumber: number;
 }
@@ -16,6 +20,8 @@ interface Config {
 function loadConfig(): Config {
   const githubToken = process.env.GITHUB_TOKEN;
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  const geminiApiKey = process.env.GEMINI_API_KEY;
   const repository = process.env.GITHUB_REPOSITORY;
   const prNumber = process.env.PR_NUMBER;
 
@@ -25,6 +31,14 @@ function loadConfig(): Config {
 
   if (!anthropicApiKey) {
     throw new Error('Missing required env var: ANTHROPIC_API_KEY');
+  }
+
+  if (!openaiApiKey) {
+    throw new Error('Missing required env var: OPENAI_API_KEY');
+  }
+
+  if (!geminiApiKey) {
+    throw new Error('Missing required env var: GEMINI_API_KEY');
   }
 
   if (!repository) {
@@ -38,6 +52,8 @@ function loadConfig(): Config {
   return {
     githubToken,
     anthropicApiKey,
+    openaiApiKey,
+    geminiApiKey,
     repository,
     prNumber: parseInt(prNumber, 10),
   };
@@ -67,7 +83,9 @@ async function main() {
     // Initialize components
     const prHandler = new PRHandler(config.githubToken, owner, repo);
     const sqlReader = new SQLReader('sql');
-    const analyzer = new SQLAnalyzer(config.anthropicApiKey);
+    const anthropicAnalyzer = new SQLAnalyzer(config.anthropicApiKey);
+    const openaiAnalyzer = new OpenAIAnalyzer(config.openaiApiKey);
+    const geminiAnalyzer = new GeminiAnalyzer(config.geminiApiKey);
     const commenter = new PRCommenter(config.githubToken, owner, repo);
 
     // Get PR info
@@ -102,26 +120,56 @@ async function main() {
 
     console.log(`✅ Read ${sqlFiles.length} file(s)\n`);
 
-    // Analyze files sequentially
-    console.log('🔍 Analyzing files with Claude AI...\n');
-    const results = await analyzer.analyzeMultipleFiles(
-      sqlFiles.map((f) => ({
-        filename: f.filename,
-        content: f.content,
-      }))
-    );
+    // Analyze files with 3 AI models in parallel
+    console.log('🔍 Analyzing files with 3 AI models in parallel...\n');
+    const filesToAnalyze = sqlFiles.map((f) => ({
+      filename: f.filename,
+      content: f.content,
+    }));
+
+    const [anthropicResults, openaiResults, geminiResults] = await Promise.all([
+      anthropicAnalyzer.analyzeMultipleFiles(filesToAnalyze),
+      openaiAnalyzer.analyzeMultipleFiles(filesToAnalyze),
+      geminiAnalyzer.analyzeMultipleFiles(filesToAnalyze),
+    ]);
 
     // Generate GitHub Actions run URL
     const runUrl = buildGitHubRunUrl(config.repository);
 
-    // Generate and write Job Summary
-    console.log('\n📊 Generating detailed report...');
-    const jobSummary = GitHubReporter.generateJobSummary(results, config.prNumber, config.repository);
-    await GitHubReporter.writeJobSummary(jobSummary);
+    // Post 3 separate comments to PR (one per AI model)
+    console.log('\n💬 Posting 3 separate analyses to PR...');
 
-    // Post comment to PR
-    console.log('\n💬 Posting analysis to PR...');
-    await commenter.postComment(config.prNumber, results, runUrl);
+    console.log('   📝 Posting Claude Sonnet 4.5 analysis...');
+    await commenter.postComment(
+      config.prNumber,
+      anthropicResults,
+      runUrl,
+      'Claude Sonnet 4.5',
+      'claude-sonnet-4-5-20250929'
+    );
+
+    console.log('   📝 Posting GPT-5 analysis...');
+    await commenter.postComment(
+      config.prNumber,
+      openaiResults,
+      runUrl,
+      'GPT-5',
+      'gpt-5'
+    );
+
+    console.log('   📝 Posting Gemini 2.5 Pro analysis...');
+    await commenter.postComment(
+      config.prNumber,
+      geminiResults,
+      runUrl,
+      'Gemini 2.5 Pro',
+      'gemini-2.5-pro'
+    );
+
+    // Generate and write Job Summary (combined report)
+    console.log('\n📊 Generating detailed combined report...');
+    const jobSummary = GitHubReporter.generateJobSummary(anthropicResults, config.prNumber, config.repository);
+    await GitHubReporter.writeJobSummary(jobSummary);
 
     console.log('\n✨ Analysis complete! Check the PR for results.\n');
   } catch (error) {
