@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { getAnalysisPrompt } from './prompt.js';
 
 export interface CriticalIssue {
@@ -32,46 +32,48 @@ export interface AnalysisResult {
   actionPlan: string[];
 }
 
-export class SQLAnalyzer {
-  private client: Anthropic;
+export class OpenAIAnalyzer {
+  private client: OpenAI;
+  private modelName = 'gpt-5';
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new OpenAI({ apiKey });
   }
 
   async analyzeSQLFile(sqlContent: string, filename: string): Promise<AnalysisResult> {
-    console.log(`🔍 Analyzing ${filename}...`);
+    console.log(`🔍 [GPT-5] Analyzing ${filename}...`);
 
     const prompt = getAnalysisPrompt(sqlContent, filename);
 
     try {
-      const message = await this.client.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
+      const completion = await this.client.chat.completions.create({
+        model: this.modelName,
         messages: [
           {
             role: 'user',
             content: prompt,
           },
         ],
+        temperature: 1.0,
+        max_tokens: 4096,
       });
 
-      const responseText = message.content[0].type === 'text' ? message.content[0].text : '';
+      const responseText = completion.choices[0]?.message?.content || '';
 
       // Extract JSON from response (handle code blocks)
       const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/) || responseText.match(/({[\s\S]*})/);
 
       if (!jsonMatch) {
-        throw new Error('No JSON found in Claude response');
+        throw new Error('No JSON found in GPT-5 response');
       }
 
       const result = JSON.parse(jsonMatch[1] || jsonMatch[0]) as AnalysisResult;
 
-      console.log(`✅ Analysis complete. Score: ${result.score}/10`);
+      console.log(`✅ [GPT-5] Analysis complete. Score: ${result.score}/10`);
 
       return result;
     } catch (error) {
-      console.error('❌ Error analyzing SQL:', error);
+      console.error('❌ [GPT-5] Error analyzing SQL:', error);
       throw error;
     }
   }
@@ -81,13 +83,13 @@ export class SQLAnalyzer {
   ): Promise<Map<string, AnalysisResult>> {
     const results = new Map<string, AnalysisResult>();
 
-    // Sequential analysis (as requested)
+    // Sequential analysis
     for (const file of files) {
       try {
         const result = await this.analyzeSQLFile(file.content, file.filename);
         results.set(file.filename, result);
       } catch (error) {
-        console.error(`Failed to analyze ${file.filename}:`, error);
+        console.error(`[GPT-5] Failed to analyze ${file.filename}:`, error);
         // Store error result
         results.set(file.filename, {
           score: 0,
@@ -102,5 +104,9 @@ export class SQLAnalyzer {
     }
 
     return results;
+  }
+
+  getModelName(): string {
+    return this.modelName;
   }
 }
