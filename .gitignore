@@ -13,6 +13,9 @@ build/
 .env.local
 .env.*.local
 
+# Local agent configuration overrides
+config/agents.local.json
+
 # IDE
 .vscode/
 .idea/

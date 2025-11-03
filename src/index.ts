@@ -7,6 +7,7 @@ import { SQLReader } from './parser/sql-reader.js';
 import { PRHandler } from './github/pr-handler.js';
 import { PRCommenter } from './github/commenter.js';
 import { GitHubReporter } from './github/reporter.js';
+import { loadAgentsConfig } from './config/agents-config.js';
 
 interface Config {
   githubToken: string;
@@ -29,16 +30,18 @@ function loadConfig(): Config {
     throw new Error('Missing required env var: GITHUB_TOKEN');
   }
 
-  if (!anthropicApiKey) {
-    throw new Error('Missing required env var: ANTHROPIC_API_KEY');
+  const agentsConfig = loadAgentsConfig();
+
+  if (agentsConfig.agents.claude.enabled && !anthropicApiKey) {
+    throw new Error('Missing required env var: ANTHROPIC_API_KEY (Claude is enabled)');
   }
 
-  if (!openaiApiKey) {
-    throw new Error('Missing required env var: OPENAI_API_KEY');
+  if (agentsConfig.agents.openai.enabled && !openaiApiKey) {
+    throw new Error('Missing required env var: OPENAI_API_KEY (OpenAI is enabled)');
   }
 
-  if (!geminiApiKey) {
-    throw new Error('Missing required env var: GEMINI_API_KEY');
+  if (agentsConfig.agents.gemini.enabled && !geminiApiKey) {
+    throw new Error('Missing required env var: GEMINI_API_KEY (Gemini is enabled)');
   }
 
   if (!repository) {
@@ -51,9 +54,9 @@ function loadConfig(): Config {
 
   return {
     githubToken,
-    anthropicApiKey,
-    openaiApiKey,
-    geminiApiKey,
+    anthropicApiKey: anthropicApiKey || '',
+    openaiApiKey: openaiApiKey || '',
+    geminiApiKey: geminiApiKey || '',
     repository,
     prNumber: parseInt(prNumber, 10),
   };
@@ -80,13 +83,29 @@ async function main() {
     console.log(`📦 Repository: ${config.repository}`);
     console.log(`🔢 PR Number: #${config.prNumber}\n`);
 
+    // Load agents configuration
+    const agentsConfig = loadAgentsConfig();
+    console.log('🤖 Active agents:', Object.entries(agentsConfig.agents)
+      .filter(([_, cfg]) => cfg.enabled)
+      .map(([name, _]) => name)
+      .join(', '));
+    console.log('');
+
     // Initialize components
     const prHandler = new PRHandler(config.githubToken, owner, repo);
     const sqlReader = new SQLReader('sql');
-    const anthropicAnalyzer = new SQLAnalyzer(config.anthropicApiKey);
-    const openaiAnalyzer = new OpenAIAnalyzer(config.openaiApiKey);
-    const geminiAnalyzer = new GeminiAnalyzer(config.geminiApiKey);
     const commenter = new PRCommenter(config.githubToken, owner, repo);
+
+    // Initialize only enabled analyzers
+    const anthropicAnalyzer = agentsConfig.agents.claude.enabled
+      ? new SQLAnalyzer(config.anthropicApiKey)
+      : null;
+    const openaiAnalyzer = agentsConfig.agents.openai.enabled
+      ? new OpenAIAnalyzer(config.openaiApiKey)
+      : null;
+    const geminiAnalyzer = agentsConfig.agents.gemini.enabled
+      ? new GeminiAnalyzer(config.geminiApiKey)
+      : null;
 
     // Get PR info
     const prInfo = await prHandler.getPRInfo(config.prNumber);
@@ -120,56 +139,75 @@ async function main() {
 
     console.log(`✅ Read ${sqlFiles.length} file(s)\n`);
 
-    // Analyze files with 3 AI models in parallel
-    console.log('🔍 Analyzing files with 3 AI models in parallel...\n');
+    // Analyze files with enabled AI models in parallel
+    const activeAgentsCount = Object.values(agentsConfig.agents).filter(a => a.enabled).length;
+    console.log(`🔍 Analyzing files with ${activeAgentsCount} AI model(s) in parallel...\n`);
+
     const filesToAnalyze = sqlFiles.map((f) => ({
       filename: f.filename,
       content: f.content,
     }));
 
-    const [anthropicResults, openaiResults, geminiResults] = await Promise.all([
-      anthropicAnalyzer.analyzeMultipleFiles(filesToAnalyze),
-      openaiAnalyzer.analyzeMultipleFiles(filesToAnalyze),
-      geminiAnalyzer.analyzeMultipleFiles(filesToAnalyze),
-    ]);
+    // Build dynamic Promise.all array
+    const analysisPromises: Promise<any>[] = [];
+    if (anthropicAnalyzer) analysisPromises.push(anthropicAnalyzer.analyzeMultipleFiles(filesToAnalyze));
+    if (openaiAnalyzer) analysisPromises.push(openaiAnalyzer.analyzeMultipleFiles(filesToAnalyze));
+    if (geminiAnalyzer) analysisPromises.push(geminiAnalyzer.analyzeMultipleFiles(filesToAnalyze));
+
+    const results = await Promise.all(analysisPromises);
+
+    // Map results back to analyzers
+    let resultIndex = 0;
+    const anthropicResults = anthropicAnalyzer ? results[resultIndex++] : null;
+    const openaiResults = openaiAnalyzer ? results[resultIndex++] : null;
+    const geminiResults = geminiAnalyzer ? results[resultIndex++] : null;
 
     // Generate GitHub Actions run URL
     const runUrl = buildGitHubRunUrl(config.repository);
 
-    // Post 3 separate comments to PR (one per AI model)
-    console.log('\n💬 Posting 3 separate analyses to PR...');
+    // Post separate comments to PR (one per enabled AI model)
+    console.log(`\n💬 Posting ${activeAgentsCount} analysis comment(s) to PR...`);
 
-    console.log('   📝 Posting Claude Sonnet 4.5 analysis...');
-    await commenter.postComment(
-      config.prNumber,
-      anthropicResults,
-      runUrl,
-      'Claude Sonnet 4.5',
-      'claude-sonnet-4-5-20250929'
-    );
+    if (anthropicResults) {
+      console.log('   📝 Posting Claude Sonnet 4.5 analysis...');
+      await commenter.postComment(
+        config.prNumber,
+        anthropicResults,
+        runUrl,
+        'Claude Sonnet 4.5',
+        'claude-sonnet-4-5-20250929'
+      );
+    }
 
-    console.log('   📝 Posting GPT-5 analysis...');
-    await commenter.postComment(
-      config.prNumber,
-      openaiResults,
-      runUrl,
-      'GPT-5',
-      'gpt-5'
-    );
+    if (openaiResults) {
+      console.log('   📝 Posting GPT-5 analysis...');
+      await commenter.postComment(
+        config.prNumber,
+        openaiResults,
+        runUrl,
+        'GPT-5',
+        'gpt-5'
+      );
+    }
 
-    console.log('   📝 Posting Gemini 2.5 Pro analysis...');
-    await commenter.postComment(
-      config.prNumber,
-      geminiResults,
-      runUrl,
-      'Gemini 2.5 Pro',
-      'gemini-2.5-pro'
-    );
+    if (geminiResults) {
+      console.log('   📝 Posting Gemini 2.5 Pro analysis...');
+      await commenter.postComment(
+        config.prNumber,
+        geminiResults,
+        runUrl,
+        'Gemini 2.5 Pro',
+        'gemini-2.5-pro'
+      );
+    }
 
-    // Generate and write Job Summary (combined report)
+    // Generate and write Job Summary (using Claude results if available, otherwise first available)
     console.log('\n📊 Generating detailed combined report...');
-    const jobSummary = GitHubReporter.generateJobSummary(anthropicResults, config.prNumber, config.repository);
-    await GitHubReporter.writeJobSummary(jobSummary);
+    const summaryResults = anthropicResults || openaiResults || geminiResults;
+    if (summaryResults) {
+      const jobSummary = GitHubReporter.generateJobSummary(summaryResults, config.prNumber, config.repository);
+      await GitHubReporter.writeJobSummary(jobSummary);
+    }
 
     console.log('\n✨ Analysis complete! Check the PR for results.\n');
   } catch (error) {

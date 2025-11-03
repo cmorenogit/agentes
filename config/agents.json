@@ -1,0 +1,13 @@
+{
+  "agents": {
+    "claude": {
+      "enabled": true
+    },
+    "openai": {
+      "enabled": false
+    },
+    "gemini": {
+      "enabled": false
+    }
+  }
+}
