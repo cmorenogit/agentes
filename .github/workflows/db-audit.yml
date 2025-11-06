@@ -1,0 +1,55 @@
+name: Database Security Audit
+
+on:
+  pull_request:
+    paths:
+      - 'sql/**/*.sql'
+      - 'migrations/**/*.sql'
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run Database Security Audit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: npm run audit:db:ci
+
+      - name: Audit complete
+        if: success()
+        run: echo "✅ Database security audit complete. Check PR comments for results."
+
+      - name: Check critical findings
+        if: always()
+        run: |
+          if [ -f audit-critical-found.flag ]; then
+            echo "❌ Critical security issues detected"
+            echo "Review the PR comment for details and remediation steps"
+            exit 1
+          else
+            echo "✅ No critical security issues found"
+          fi
