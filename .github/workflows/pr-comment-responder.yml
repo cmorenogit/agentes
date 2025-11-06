@@ -15,6 +15,16 @@ jobs:
       issues: write
 
     steps:
+      - name: Debug - Print event info
+        run: |
+          echo "🔍 Event Debug Info:"
+          echo "Event name: ${{ github.event_name }}"
+          echo "Is PR: ${{ github.event.issue.pull_request != null }}"
+          echo "Comment body contains @sql-agent: ${{ contains(github.event.comment.body, '@sql-agent') }}"
+          echo "PR Number: ${{ github.event.issue.number }}"
+          echo "Comment User: ${{ github.event.comment.user.login }}"
+          echo "Comment preview: ${{ github.event.comment.body }}"
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -28,6 +38,16 @@ jobs:
 
       - name: Build TypeScript
         run: npm run build
+
+      - name: Check if ANTHROPIC_API_KEY is set
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "❌ ERROR: ANTHROPIC_API_KEY secret is not configured!"
+            echo "Please add it in Settings → Secrets and variables → Actions"
+            exit 1
+          else
+            echo "✅ ANTHROPIC_API_KEY is configured"
+          fi
 
       - name: Respond to comment
         env:
