@@ -38,3 +38,6 @@ coverage/
 # Temp
 tmp/
 temp/
+
+# Database Audit Reports
+audit-report.md
